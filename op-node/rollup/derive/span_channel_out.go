@@ -23,8 +23,8 @@ type SpanChannelOut struct {
 	compress Compressor
 	// closed indicates if the channel is closed
 	closed bool
-	// spanBatchBuilder contains information requires to build SpanBatch
-	spanBatchBuilder *SpanBatchBuilder
+	// spanBatch is the batch being built
+	spanBatch *SpanBatch
 	// reader contains compressed data for making output frames
 	reader *bytes.Buffer
 }
@@ -33,14 +33,14 @@ func (co *SpanChannelOut) ID() ChannelID {
 	return co.id
 }
 
-func NewSpanChannelOut(compress Compressor, spanBatchBuilder *SpanBatchBuilder) (*SpanChannelOut, error) {
+func NewSpanChannelOut(compress Compressor, spanBatch *SpanBatch) (*SpanChannelOut, error) {
 	c := &SpanChannelOut{
-		id:               ChannelID{},
-		frame:            0,
-		rlpLength:        0,
-		compress:         compress,
-		spanBatchBuilder: spanBatchBuilder,
-		reader:           &bytes.Buffer{},
+		id:        ChannelID{},
+		frame:     0,
+		rlpLength: 0,
+		compress:  compress,
+		spanBatch: spanBatch,
+		reader:    &bytes.Buffer{},
 	}
 	_, err := rand.Read(c.id[:])
 	if err != nil {
@@ -56,7 +56,11 @@ func (co *SpanChannelOut) Reset() error {
 	co.compress.Reset()
 	co.reader.Reset()
 	co.closed = false
-	co.spanBatchBuilder.Reset()
+	co.spanBatch = &SpanBatch{
+		originChangedBit: co.spanBatch.originChangedBit,
+		GenesisTimestamp: co.spanBatch.GenesisTimestamp,
+		ChainID:          co.spanBatch.ChainID,
+	}
 	_, err := rand.Read(co.id[:])
 	return err
 }
@@ -100,9 +104,9 @@ func (co *SpanChannelOut) AddSingularBatch(batch *SingularBatch, seqNum uint64) 
 	}
 	var buf bytes.Buffer
 	// Append Singular batch to its span batch builder
-	co.spanBatchBuilder.AppendSingularBatch(batch, seqNum)
+	co.spanBatch.AppendSingularBatch(batch, seqNum)
 	// Convert Span batch to RawSpanBatch
-	rawSpanBatch, err := co.spanBatchBuilder.GetRawSpanBatch()
+	rawSpanBatch, err := co.spanBatch.ToRawSpanBatch()
 	if err != nil {
 		return 0, fmt.Errorf("failed to convert SpanBatch into RawSpanBatch: %w", err)
 	}
@@ -117,7 +121,7 @@ func (co *SpanChannelOut) AddSingularBatch(batch *SingularBatch, seqNum uint64) 
 	}
 	co.rlpLength = buf.Len()
 
-	if co.spanBatchBuilder.GetBlockCount() > 1 {
+	if len(co.spanBatch.Batches) > 1 {
 		// Flush compressed data into reader to preserve current result.
 		// If the channel is full after this block is appended, we should use preserved data.
 		if err := co.compress.Flush(); err != nil {
@@ -137,7 +141,7 @@ func (co *SpanChannelOut) AddSingularBatch(batch *SingularBatch, seqNum uint64) 
 	written, err := co.compress.Write(buf.Bytes())
 	if co.compress.FullErr() != nil {
 		err = co.compress.FullErr()
-		if co.spanBatchBuilder.GetBlockCount() == 1 {
+		if len(co.spanBatch.Batches) == 1 {
 			// Do not return CompressorFullErr for the first block in the batch
 			// In this case, reader must be empty. then the contents of compressor will be copied to reader when the channel is closed.
 			err = nil

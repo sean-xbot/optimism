@@ -734,10 +734,10 @@ func ChannelBuilder_InputBytes(t *testing.T, batchType uint) {
 	rng := rand.New(rand.NewSource(4982432))
 	cfg := defaultTestChannelConfig()
 	cfg.BatchType = batchType
-	var spanBatchBuilder *derive.SpanBatchBuilder
+	var spanBatch *derive.SpanBatch
 	if batchType == derive.SpanBatchType {
 		chainId := big.NewInt(1234)
-		spanBatchBuilder = derive.NewSpanBatchBuilder(uint64(0), chainId)
+		spanBatch = derive.NewSpanBatch(uint64(0), chainId)
 	}
 	cb, err := NewChannelBuilder(cfg, defaultTestRollupConfig, latestL1BlockOrigin)
 	require.NoError(err)
@@ -752,8 +752,8 @@ func ChannelBuilder_InputBytes(t *testing.T, batchType uint) {
 		} else {
 			singularBatch, l1Info, err := derive.BlockToSingularBatch(&defaultTestRollupConfig, block)
 			require.NoError(err)
-			spanBatchBuilder.AppendSingularBatch(singularBatch, l1Info.SequenceNumber)
-			rawSpanBatch, err := spanBatchBuilder.GetRawSpanBatch()
+			spanBatch.AppendSingularBatch(singularBatch, l1Info.SequenceNumber)
+			rawSpanBatch, err := spanBatch.ToRawSpanBatch()
 			require.NoError(err)
 			batch := derive.NewBatchData(rawSpanBatch)
 			var buf bytes.Buffer

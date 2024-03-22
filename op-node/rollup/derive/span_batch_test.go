@@ -27,7 +27,7 @@ func TestSpanBatchForBatchInterface(t *testing.T) {
 	safeL2Head := testutils.RandomL2BlockRef(rng)
 	safeL2Head.Hash = common.BytesToHash(singularBatches[0].ParentHash[:])
 
-	spanBatch := NewSpanBatch(singularBatches)
+	spanBatch := InitializedSpanBatch(singularBatches, uint64(0), chainID)
 
 	// check interface method implementations except logging
 	require.Equal(t, SpanBatchType, spanBatch.GetBatchType())
@@ -322,9 +322,10 @@ func TestSpanBatchDerive(t *testing.T) {
 		safeL2Head.Hash = common.BytesToHash(singularBatches[0].ParentHash[:])
 		genesisTimeStamp := 1 + singularBatches[0].Timestamp - 128
 
-		spanBatch := NewSpanBatch(singularBatches)
-		originChangedBit := uint(originChangedBit)
-		rawSpanBatch, err := spanBatch.ToRawSpanBatch(originChangedBit, genesisTimeStamp, chainID)
+		spanBatch := InitializedSpanBatch(singularBatches, genesisTimeStamp, chainID)
+		// set originChangedBit to match the original test implementation
+		spanBatch.originChangedBit = uint(originChangedBit)
+		rawSpanBatch, err := spanBatch.ToRawSpanBatch()
 		require.NoError(t, err)
 
 		spanBatchDerived, err := rawSpanBatch.derive(l2BlockTime, genesisTimeStamp, chainID)
@@ -354,14 +355,14 @@ func TestSpanBatchAppend(t *testing.T) {
 
 	singularBatches := RandomValidConsecutiveSingularBatches(rng, chainID)
 	// initialize empty span batch
-	spanBatch := NewSpanBatch([]*SingularBatch{})
+	spanBatch := InitializedSpanBatch([]*SingularBatch{}, uint64(0), chainID)
 
 	L := 2
 	for i := 0; i < L; i++ {
-		spanBatch.AppendSingularBatch(singularBatches[i])
+		spanBatch.AppendSingularBatch(singularBatches[i], uint64(1))
 	}
 	// initialize with two singular batches
-	spanBatch2 := NewSpanBatch(singularBatches[:L])
+	spanBatch2 := InitializedSpanBatch(singularBatches[:L], uint64(0), chainID)
 
 	require.Equal(t, spanBatch, spanBatch2)
 }
@@ -376,9 +377,11 @@ func TestSpanBatchMerge(t *testing.T) {
 		singularBatches := RandomValidConsecutiveSingularBatches(rng, chainID)
 		blockCount := len(singularBatches)
 
-		spanBatch := NewSpanBatch(singularBatches)
+		spanBatch := InitializedSpanBatch(singularBatches, genesisTimeStamp, chainID)
 		originChangedBit := uint(originChangedBit)
-		rawSpanBatch, err := spanBatch.ToRawSpanBatch(originChangedBit, genesisTimeStamp, chainID)
+		// set originChangedBit to match the original test implementation
+		spanBatch.originChangedBit = originChangedBit
+		rawSpanBatch, err := spanBatch.ToRawSpanBatch()
 		require.NoError(t, err)
 
 		// check span batch prefix
@@ -421,9 +424,11 @@ func TestSpanBatchToSingularBatch(t *testing.T) {
 		safeL2Head.Time = singularBatches[0].Timestamp - 2
 		genesisTimeStamp := 1 + singularBatches[0].Timestamp - 128
 
-		spanBatch := NewSpanBatch(singularBatches)
+		spanBatch := InitializedSpanBatch(singularBatches, genesisTimeStamp, chainID)
 		originChangedBit := uint(originChangedBit)
-		rawSpanBatch, err := spanBatch.ToRawSpanBatch(originChangedBit, genesisTimeStamp, chainID)
+		// set originChangedBit to match the original test implementation
+		spanBatch.originChangedBit = originChangedBit
+		rawSpanBatch, err := spanBatch.ToRawSpanBatch()
 		require.NoError(t, err)
 
 		l1Origins := mockL1Origin(rng, rawSpanBatch, singularBatches)
@@ -490,49 +495,6 @@ func TestSpanBatchReadTxDataInvalid(t *testing.T) {
 	r := bytes.NewReader(dummy)
 	_, _, err = ReadTxData(r)
 	require.ErrorContains(t, err, "tx RLP prefix type must be list")
-}
-
-func TestSpanBatchBuilder(t *testing.T) {
-	rng := rand.New(rand.NewSource(0xbab1bab1))
-	chainID := new(big.Int).SetUint64(rng.Uint64())
-
-	for originChangedBit := 0; originChangedBit < 2; originChangedBit++ {
-		singularBatches := RandomValidConsecutiveSingularBatches(rng, chainID)
-		safeL2Head := testutils.RandomL2BlockRef(rng)
-		if originChangedBit == 0 {
-			safeL2Head.Hash = common.BytesToHash(singularBatches[0].ParentHash[:])
-		}
-		genesisTimeStamp := 1 + singularBatches[0].Timestamp - 128
-
-		var seqNum uint64 = 1
-		if originChangedBit == 1 {
-			seqNum = 0
-		}
-		spanBatchBuilder := NewSpanBatchBuilder(genesisTimeStamp, chainID)
-
-		require.Equal(t, 0, spanBatchBuilder.GetBlockCount())
-
-		for i := 0; i < len(singularBatches); i++ {
-			spanBatchBuilder.AppendSingularBatch(singularBatches[i], seqNum)
-			require.Equal(t, i+1, spanBatchBuilder.GetBlockCount())
-			require.Equal(t, singularBatches[0].ParentHash.Bytes()[:20], spanBatchBuilder.spanBatch.ParentCheck[:])
-			require.Equal(t, singularBatches[i].EpochHash.Bytes()[:20], spanBatchBuilder.spanBatch.L1OriginCheck[:])
-		}
-
-		rawSpanBatch, err := spanBatchBuilder.GetRawSpanBatch()
-		require.NoError(t, err)
-
-		// compare with rawSpanBatch not using spanBatchBuilder
-		spanBatch := NewSpanBatch(singularBatches)
-		originChangedBit := uint(originChangedBit)
-		rawSpanBatch2, err := spanBatch.ToRawSpanBatch(originChangedBit, genesisTimeStamp, chainID)
-		require.NoError(t, err)
-
-		require.Equal(t, rawSpanBatch2, rawSpanBatch)
-
-		spanBatchBuilder.Reset()
-		require.Equal(t, 0, spanBatchBuilder.GetBlockCount())
-	}
 }
 
 func TestSpanBatchMaxTxData(t *testing.T) {

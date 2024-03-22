@@ -411,9 +411,12 @@ func singularBatchToElement(singularBatch *SingularBatch) *SpanBatchElement {
 // SpanBatch is an implementation of Batch interface,
 // containing the input to build a span of L2 blocks in derived form (SpanBatchElement)
 type SpanBatch struct {
-	ParentCheck   [20]byte            // First 20 bytes of the first block's parent hash
-	L1OriginCheck [20]byte            // First 20 bytes of the last block's L1 origin hash
-	Batches       []*SpanBatchElement // List of block input in derived form
+	ParentCheck      [20]byte // First 20 bytes of the first block's parent hash
+	L1OriginCheck    [20]byte // First 20 bytes of the last block's L1 origin hash
+	GenesisTimestamp uint64
+	ChainID          *big.Int
+	originChangedBit uint
+	Batches          []*SpanBatchElement // List of block input in derived form
 }
 
 // spanBatchMarshaling is a helper type used for JSON marshaling.
@@ -495,8 +498,12 @@ func (b *SpanBatch) GetBlockCount() int {
 
 // AppendSingularBatch appends a SingularBatch into the span batch
 // updates l1OriginCheck or parentCheck if needed.
-func (b *SpanBatch) AppendSingularBatch(singularBatch *SingularBatch) {
+func (b *SpanBatch) AppendSingularBatch(singularBatch *SingularBatch, seqNum uint64) {
 	if len(b.Batches) == 0 {
+		b.originChangedBit = 0
+		if seqNum == 0 {
+			b.originChangedBit = 1
+		}
 		copy(b.ParentCheck[:], singularBatch.ParentHash.Bytes()[:20])
 	}
 	b.Batches = append(b.Batches, singularBatchToElement(singularBatch))
@@ -504,7 +511,7 @@ func (b *SpanBatch) AppendSingularBatch(singularBatch *SingularBatch) {
 }
 
 // ToRawSpanBatch merges SingularBatch List and initialize single RawSpanBatch
-func (b *SpanBatch) ToRawSpanBatch(originChangedBit uint, genesisTimestamp uint64, chainID *big.Int) (*RawSpanBatch, error) {
+func (b *SpanBatch) ToRawSpanBatch() (*RawSpanBatch, error) {
 	if len(b.Batches) == 0 {
 		return nil, errors.New("cannot merge empty singularBatch list")
 	}
@@ -516,14 +523,14 @@ func (b *SpanBatch) ToRawSpanBatch(originChangedBit uint, genesisTimestamp uint6
 	// spanBatchPrefix
 	span_start := b.Batches[0]
 	span_end := b.Batches[len(b.Batches)-1]
-	raw.relTimestamp = span_start.Timestamp - genesisTimestamp
+	raw.relTimestamp = span_start.Timestamp - b.GenesisTimestamp
 	raw.l1OriginNum = uint64(span_end.EpochNum)
 	raw.parentCheck = b.ParentCheck
 	raw.l1OriginCheck = b.L1OriginCheck
 	// spanBatchPayload
 	raw.blockCount = uint64(len(b.Batches))
 	raw.originBits = new(big.Int)
-	raw.originBits.SetBit(raw.originBits, 0, originChangedBit)
+	raw.originBits.SetBit(raw.originBits, 0, b.originChangedBit)
 	for i := 1; i < len(b.Batches); i++ {
 		bit := uint(0)
 		if b.Batches[i-1].EpochNum < b.Batches[i].EpochNum {
@@ -541,7 +548,7 @@ func (b *SpanBatch) ToRawSpanBatch(originChangedBit uint, genesisTimestamp uint6
 		}
 	}
 	raw.blockTxCounts = blockTxCounts
-	stxs, err := newSpanBatchTxs(txs, chainID)
+	stxs, err := newSpanBatchTxs(txs, b.ChainID)
 	if err != nil {
 		return nil, err
 	}
@@ -582,15 +589,28 @@ func (b *SpanBatch) GetSingularBatches(l1Origins []eth.L1BlockRef, l2SafeHead et
 }
 
 // NewSpanBatch converts given singularBatches into SpanBatchElements, and creates a new SpanBatch.
-func NewSpanBatch(singularBatches []*SingularBatch) *SpanBatch {
-	spanBatch := &SpanBatch{}
+func NewSpanBatch(genesisTimestamp uint64, chainID *big.Int) *SpanBatch {
+	return &SpanBatch{
+		GenesisTimestamp: genesisTimestamp,
+		ChainID:          chainID,
+	}
+}
+
+// InitializedSpanBatch creates a new SpanBatch with given SingularBatches.
+// It is used *only* in tests to create a SpanBatch with given SingularBatches.
+// It assumes a sequence number of 1 for the first batch.
+func InitializedSpanBatch(singularBatches []*SingularBatch, genesisTimestamp uint64, chainID *big.Int) *SpanBatch {
+	spanBatch := &SpanBatch{
+		GenesisTimestamp: genesisTimestamp,
+		ChainID:          chainID,
+	}
 	if len(singularBatches) == 0 {
 		return spanBatch
 	}
-	copy(spanBatch.ParentCheck[:], singularBatches[0].ParentHash.Bytes()[:20])
-	copy(spanBatch.L1OriginCheck[:], singularBatches[len(singularBatches)-1].EpochHash.Bytes()[:20])
-	for _, singularBatch := range singularBatches {
-		spanBatch.Batches = append(spanBatch.Batches, singularBatchToElement(singularBatch))
+	for i := 0; i < len(singularBatches); i++ {
+		// TODO: I am not sure the right value when appending batches that we've just been given in the constructor.
+		// setting this to 1 makes the originChangedBit 1 on the first batch added
+		spanBatch.AppendSingularBatch(singularBatches[i], uint64(1))
 	}
 	return spanBatch
 }
@@ -603,49 +623,6 @@ func DeriveSpanBatch(batchData *BatchData, blockTime, genesisTimestamp uint64, c
 	}
 	// If the batch type is Span batch, derive block inputs from RawSpanBatch.
 	return rawSpanBatch.ToSpanBatch(blockTime, genesisTimestamp, chainID)
-}
-
-// SpanBatchBuilder is a utility type to build a SpanBatch by adding a SingularBatch one by one.
-// makes easier to stack SingularBatches and convert to RawSpanBatch for encoding.
-type SpanBatchBuilder struct {
-	genesisTimestamp uint64
-	chainID          *big.Int
-	spanBatch        *SpanBatch
-	originChangedBit uint
-}
-
-func NewSpanBatchBuilder(genesisTimestamp uint64, chainID *big.Int) *SpanBatchBuilder {
-	return &SpanBatchBuilder{
-		genesisTimestamp: genesisTimestamp,
-		chainID:          chainID,
-		spanBatch:        &SpanBatch{},
-	}
-}
-
-func (b *SpanBatchBuilder) AppendSingularBatch(singularBatch *SingularBatch, seqNum uint64) {
-	if b.GetBlockCount() == 0 {
-		b.originChangedBit = 0
-		if seqNum == 0 {
-			b.originChangedBit = 1
-		}
-	}
-	b.spanBatch.AppendSingularBatch(singularBatch)
-}
-
-func (b *SpanBatchBuilder) GetRawSpanBatch() (*RawSpanBatch, error) {
-	raw, err := b.spanBatch.ToRawSpanBatch(b.originChangedBit, b.genesisTimestamp, b.chainID)
-	if err != nil {
-		return nil, err
-	}
-	return raw, nil
-}
-
-func (b *SpanBatchBuilder) GetBlockCount() int {
-	return len(b.spanBatch.Batches)
-}
-
-func (b *SpanBatchBuilder) Reset() {
-	b.spanBatch = &SpanBatch{}
 }
 
 // ReadTxData reads raw RLP tx data from reader and returns txData and txType
