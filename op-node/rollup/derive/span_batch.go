@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"sort"
 
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
@@ -415,8 +414,13 @@ type SpanBatch struct {
 	L1OriginCheck    [20]byte // First 20 bytes of the last block's L1 origin hash
 	GenesisTimestamp uint64
 	ChainID          *big.Int
-	originChangedBit uint
 	Batches          []*SpanBatchElement // List of block input in derived form
+
+	// caching
+	originBits    big.Int
+	blockTxCounts []uint64
+	sbtxs         *spanBatchTxs
+	storedSbtxErr error
 }
 
 // spanBatchMarshaling is a helper type used for JSON marshaling.
@@ -496,18 +500,66 @@ func (b *SpanBatch) GetBlockCount() int {
 	return len(b.Batches)
 }
 
+// SetFirstOriginChangedBit sets the first bit of the originBits to the given value
+// also used by tests when they use InitializedSpanBatch, because they don't have sequence numbers
+func (b *SpanBatch) SetFirstOriginChangedBit(bit uint) {
+	b.originBits.SetBit(&b.originBits, 0, bit)
+}
+
 // AppendSingularBatch appends a SingularBatch into the span batch
 // updates l1OriginCheck or parentCheck if needed.
 func (b *SpanBatch) AppendSingularBatch(singularBatch *SingularBatch, seqNum uint64) {
-	if len(b.Batches) == 0 {
-		b.originChangedBit = 0
-		if seqNum == 0 {
-			b.originChangedBit = 1
-		}
-		copy(b.ParentCheck[:], singularBatch.ParentHash.Bytes()[:20])
-	}
+	// always append the new batch and set the L1 origin check
 	b.Batches = append(b.Batches, singularBatchToElement(singularBatch))
 	copy(b.L1OriginCheck[:], singularBatch.EpochHash.Bytes()[:20])
+	// always update the caches
+	defer b.updateCaches()
+
+	// if there is only one batch, initialize the originChangedBit and ParentCheck
+	if len(b.Batches) == 1 {
+		var originChanged uint
+		if seqNum == 0 {
+			originChanged = 1
+		}
+		b.SetFirstOriginChangedBit(originChanged)
+		copy(b.ParentCheck[:], singularBatch.ParentHash.Bytes()[:20])
+		return
+	}
+	// if the last two blocks are not ordered, the structure is not ordered
+	if b.Batches[len(b.Batches)-2].Timestamp > b.Batches[len(b.Batches)-1].Timestamp {
+		// TODO: this could be recovered by reordering the blocks, and rebuilding the caches
+		panic("span batch is not ordered")
+	}
+}
+
+// UpdateCaches updates caches based on the last batch added
+func (b *SpanBatch) updateCaches() {
+	// set the originBit for the new batch according to if the epoch number has changed
+	epochBit := uint(0)
+	// if there is only one batch, it is already managed by SetFirstOriginChangedBit
+	if len(b.Batches) > 1 {
+		if b.Batches[len(b.Batches)-2].EpochNum < b.Batches[len(b.Batches)-1].EpochNum {
+			epochBit = 1
+		}
+		b.originBits.SetBit(&b.originBits, len(b.Batches)-1, epochBit)
+	}
+
+	// update the blockTxCounts cache with the latest batch's tx count
+	b.blockTxCounts = append(b.blockTxCounts, uint64(len(b.Batches[len(b.Batches)-1].Transactions)))
+
+	// add each tx to the txs cache
+	// and to the spanBatchTxs cache
+	newTxs := [][]byte{}
+	for i := 0; i < len(b.Batches[len(b.Batches)-1].Transactions); i++ {
+		newTxs = append(newTxs, b.Batches[len(b.Batches)-1].Transactions[i])
+	}
+	// if the txs fail to add to the cache, store the error
+	// it can be returned when ToRawSpanBatch is called
+	// TODO: this is not ideal. If callers update caches repeatedly, they may waste time before finding out the error.
+	// in practice, ToRawSpanBatch is called after every AppendSingularBatch, so it should be fine.
+	if err := b.sbtxs.AddTxs(newTxs, b.ChainID); err != nil {
+		b.storedSbtxErr = err
+	}
 }
 
 // ToRawSpanBatch merges SingularBatch List and initialize single RawSpanBatch
@@ -515,44 +567,21 @@ func (b *SpanBatch) ToRawSpanBatch() (*RawSpanBatch, error) {
 	if len(b.Batches) == 0 {
 		return nil, errors.New("cannot merge empty singularBatch list")
 	}
-	raw := RawSpanBatch{}
-	// Sort by timestamp of L2 block
-	sort.Slice(b.Batches, func(i, j int) bool {
-		return b.Batches[i].Timestamp < b.Batches[j].Timestamp
-	})
-	// spanBatchPrefix
+	if b.storedSbtxErr != nil {
+		return nil, b.storedSbtxErr
+	}
 	span_start := b.Batches[0]
 	span_end := b.Batches[len(b.Batches)-1]
+
+	raw := RawSpanBatch{}
 	raw.relTimestamp = span_start.Timestamp - b.GenesisTimestamp
 	raw.l1OriginNum = uint64(span_end.EpochNum)
 	raw.parentCheck = b.ParentCheck
 	raw.l1OriginCheck = b.L1OriginCheck
-	// spanBatchPayload
 	raw.blockCount = uint64(len(b.Batches))
-	raw.originBits = new(big.Int)
-	raw.originBits.SetBit(raw.originBits, 0, b.originChangedBit)
-	for i := 1; i < len(b.Batches); i++ {
-		bit := uint(0)
-		if b.Batches[i-1].EpochNum < b.Batches[i].EpochNum {
-			bit = 1
-		}
-		raw.originBits.SetBit(raw.originBits, i, bit)
-	}
-	var blockTxCounts []uint64
-	var txs [][]byte
-	for _, batch := range b.Batches {
-		blockTxCount := uint64(len(batch.Transactions))
-		blockTxCounts = append(blockTxCounts, blockTxCount)
-		for _, rawTx := range batch.Transactions {
-			txs = append(txs, rawTx)
-		}
-	}
-	raw.blockTxCounts = blockTxCounts
-	stxs, err := newSpanBatchTxs(txs, b.ChainID)
-	if err != nil {
-		return nil, err
-	}
-	raw.txs = stxs
+	raw.originBits = &b.originBits
+	raw.blockTxCounts = b.blockTxCounts
+	raw.txs = b.sbtxs
 	return &raw, nil
 }
 
@@ -593,6 +622,19 @@ func NewSpanBatch(genesisTimestamp uint64, chainID *big.Int) *SpanBatch {
 	return &SpanBatch{
 		GenesisTimestamp: genesisTimestamp,
 		ChainID:          chainID,
+
+		// set the spanBatchTxs structure with defaults
+		sbtxs: &spanBatchTxs{
+			contractCreationBits: big.NewInt(0),
+			yParityBits:          big.NewInt(0),
+			txSigs:               []spanBatchSignature{},
+			txNonces:             []uint64{},
+			txGases:              []uint64{},
+			txTos:                []common.Address{},
+			txDatas:              []hexutil.Bytes{},
+			txTypes:              []int{},
+			protectedBits:        big.NewInt(0),
+		},
 	}
 }
 
@@ -600,10 +642,7 @@ func NewSpanBatch(genesisTimestamp uint64, chainID *big.Int) *SpanBatch {
 // It is used *only* in tests to create a SpanBatch with given SingularBatches.
 // It assumes a sequence number of 1 for the first batch.
 func InitializedSpanBatch(singularBatches []*SingularBatch, genesisTimestamp uint64, chainID *big.Int) *SpanBatch {
-	spanBatch := &SpanBatch{
-		GenesisTimestamp: genesisTimestamp,
-		ChainID:          chainID,
-	}
+	spanBatch := NewSpanBatch(genesisTimestamp, chainID)
 	if len(singularBatches) == 0 {
 		return spanBatch
 	}

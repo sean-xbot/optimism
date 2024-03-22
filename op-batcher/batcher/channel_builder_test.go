@@ -7,6 +7,7 @@ import (
 	"math/big"
 	"math/rand"
 	"testing"
+	"time"
 
 	"github.com/ethereum-optimism/optimism/op-node/rollup"
 	"github.com/ethereum-optimism/optimism/op-node/rollup/derive"
@@ -83,8 +84,9 @@ func newMiniL2BlockWithNumberParentAndL1Information(numTx int, l2Number *big.Int
 // which is presumably ErrTooManyRLPBytes.
 func addTooManyBlocks(cb *ChannelBuilder) error {
 	rng := rand.New(rand.NewSource(1234))
+	t := time.Now()
 	for i := 0; i < 10_000; i++ {
-		block := dtest.RandomL2BlockWithChainId(rng, 1000, defaultTestRollupConfig.L2ChainID)
+		block := dtest.RandomL2BlockWithChainIdAndTime(rng, 1000, defaultTestRollupConfig.L2ChainID, t.Add(time.Duration(i)*time.Second))
 		_, err := cb.AddBlock(block)
 		if err != nil {
 			return err
@@ -511,8 +513,9 @@ func ChannelBuilder_OutputFramesMaxFrameIndex(t *testing.T, batchType uint) {
 	require.NoError(t, err)
 	require.False(t, cb.IsFull())
 	require.Equal(t, 0, cb.PendingFrames())
-	for {
-		a := dtest.RandomL2BlockWithChainId(rng, 1000, defaultTestRollupConfig.L2ChainID)
+	ti := time.Now()
+	for i := 0; ; i++ {
+		a := dtest.RandomL2BlockWithChainIdAndTime(rng, 1000, defaultTestRollupConfig.L2ChainID, ti.Add(time.Duration(i)*time.Second))
 		_, err = cb.AddBlock(a)
 		if cb.IsFull() {
 			fullErr := cb.FullErr()
@@ -702,9 +705,10 @@ func ChannelBuilder_PendingFrames_TotalFrames(t *testing.T, batchType uint) {
 	require.Zero(cb.PendingFrames())
 	require.Zero(cb.TotalFrames())
 
+	ti := time.Now()
 	// fill up
-	for {
-		block := dtest.RandomL2BlockWithChainId(rng, 4, defaultTestRollupConfig.L2ChainID)
+	for i := 0; ; i++ {
+		block := dtest.RandomL2BlockWithChainIdAndTime(rng, 4, defaultTestRollupConfig.L2ChainID, ti.Add(time.Duration(i)*time.Second))
 		_, err := cb.AddBlock(block)
 		if cb.IsFull() {
 			break
@@ -745,8 +749,9 @@ func ChannelBuilder_InputBytes(t *testing.T, batchType uint) {
 	require.Zero(cb.InputBytes())
 
 	var l int
+	ti := time.Now()
 	for i := 0; i < 5; i++ {
-		block := dtest.RandomL2BlockWithChainId(rng, rng.Intn(32), defaultTestRollupConfig.L2ChainID)
+		block := dtest.RandomL2BlockWithChainIdAndTime(rng, rng.Intn(32), defaultTestRollupConfig.L2ChainID, ti.Add(time.Duration(i)*time.Second))
 		if batchType == derive.SingularBatchType {
 			l += blockBatchRlpSize(t, block)
 		} else {
@@ -779,8 +784,9 @@ func ChannelBuilder_OutputBytes(t *testing.T, batchType uint) {
 
 	require.Zero(cb.OutputBytes())
 
-	for {
-		block := dtest.RandomL2BlockWithChainId(rng, rng.Intn(32), defaultTestRollupConfig.L2ChainID)
+	ti := time.Now()
+	for i := 0; ; i++ {
+		block := dtest.RandomL2BlockWithChainIdAndTime(rng, rng.Intn(32), defaultTestRollupConfig.L2ChainID, ti.Add(time.Duration(i)*time.Second))
 		_, err := cb.AddBlock(block)
 		if errors.Is(err, derive.CompressorFullErr) {
 			break

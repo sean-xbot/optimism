@@ -324,7 +324,7 @@ func TestSpanBatchDerive(t *testing.T) {
 
 		spanBatch := InitializedSpanBatch(singularBatches, genesisTimeStamp, chainID)
 		// set originChangedBit to match the original test implementation
-		spanBatch.originChangedBit = uint(originChangedBit)
+		spanBatch.SetFirstOriginChangedBit(uint(originChangedBit))
 		rawSpanBatch, err := spanBatch.ToRawSpanBatch()
 		require.NoError(t, err)
 
@@ -378,9 +378,8 @@ func TestSpanBatchMerge(t *testing.T) {
 		blockCount := len(singularBatches)
 
 		spanBatch := InitializedSpanBatch(singularBatches, genesisTimeStamp, chainID)
-		originChangedBit := uint(originChangedBit)
 		// set originChangedBit to match the original test implementation
-		spanBatch.originChangedBit = originChangedBit
+		spanBatch.SetFirstOriginChangedBit(uint(originChangedBit))
 		rawSpanBatch, err := spanBatch.ToRawSpanBatch()
 		require.NoError(t, err)
 
@@ -392,7 +391,7 @@ func TestSpanBatchMerge(t *testing.T) {
 
 		// check span batch payload
 		require.Equal(t, int(rawSpanBatch.blockCount), len(singularBatches))
-		require.Equal(t, rawSpanBatch.originBits.Bit(0), originChangedBit)
+		require.Equal(t, rawSpanBatch.originBits.Bit(0), uint(originChangedBit))
 		for i := 1; i < blockCount; i++ {
 			if rawSpanBatch.originBits.Bit(i) == 1 {
 				require.Equal(t, singularBatches[i].EpochNum, singularBatches[i-1].EpochNum+1)
@@ -425,9 +424,8 @@ func TestSpanBatchToSingularBatch(t *testing.T) {
 		genesisTimeStamp := 1 + singularBatches[0].Timestamp - 128
 
 		spanBatch := InitializedSpanBatch(singularBatches, genesisTimeStamp, chainID)
-		originChangedBit := uint(originChangedBit)
 		// set originChangedBit to match the original test implementation
-		spanBatch.originChangedBit = originChangedBit
+		spanBatch.SetFirstOriginChangedBit(uint(originChangedBit))
 		rawSpanBatch, err := spanBatch.ToRawSpanBatch()
 		require.NoError(t, err)
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/big"
 	"math/rand"
+	"time"
 
 	"github.com/ethereum-optimism/optimism/op-service/eth"
 	"github.com/ethereum/go-ethereum/common"
@@ -250,6 +251,27 @@ func RandomReceipt(rng *rand.Rand, signer types.Signer, tx *types.Transaction, t
 	}
 }
 
+func RandomHeaderWithTime(rng *rand.Rand, t time.Time) *types.Header {
+	return &types.Header{
+		ParentHash:  RandomHash(rng),
+		UncleHash:   types.EmptyUncleHash,
+		Coinbase:    RandomAddress(rng),
+		Root:        RandomHash(rng),
+		TxHash:      types.EmptyRootHash,
+		ReceiptHash: types.EmptyRootHash,
+		Bloom:       types.Bloom{},
+		Difficulty:  big.NewInt(0),
+		Number:      big.NewInt(1 + rng.Int63n(100_000_000)),
+		GasLimit:    0,
+		GasUsed:     0,
+		Time:        uint64(t.Unix()),
+		Extra:       RandomData(rng, rng.Intn(33)),
+		MixDigest:   common.Hash{},
+		Nonce:       types.BlockNonce{},
+		BaseFee:     big.NewInt(rng.Int63n(300_000_000_000)),
+	}
+}
+
 func RandomHeader(rng *rand.Rand) *types.Header {
 	return &types.Header{
 		ParentHash:  RandomHash(rng),
@@ -273,6 +295,40 @@ func RandomHeader(rng *rand.Rand) *types.Header {
 
 func RandomBlock(rng *rand.Rand, txCount uint64) (*types.Block, []*types.Receipt) {
 	return RandomBlockPrependTxs(rng, int(txCount))
+}
+
+func RandomBlockPrependTxsWithTime(rng *rand.Rand, txCount int, t time.Time, ptxs ...*types.Transaction) (*types.Block, []*types.Receipt) {
+	header := RandomHeaderWithTime(rng, t)
+	signer := types.NewLondonSigner(big.NewInt(rng.Int63n(1000)))
+	txs := make([]*types.Transaction, 0, txCount+len(ptxs))
+	txs = append(txs, ptxs...)
+	for i := 0; i < txCount; i++ {
+		txs = append(txs, RandomTx(rng, header.BaseFee, signer))
+	}
+	receipts := make([]*types.Receipt, 0, len(txs))
+	cumulativeGasUsed := uint64(0)
+	for i, tx := range txs {
+		r := RandomReceipt(rng, signer, tx, uint64(i), cumulativeGasUsed)
+		cumulativeGasUsed += r.GasUsed
+		receipts = append(receipts, r)
+	}
+	header.GasUsed = cumulativeGasUsed
+	header.GasLimit = cumulativeGasUsed + uint64(rng.Int63n(int64(cumulativeGasUsed)))
+	block := types.NewBlock(header, txs, nil, receipts, trie.NewStackTrie(nil))
+	logIndex := uint(0)
+	for i, r := range receipts {
+		r.BlockHash = block.Hash()
+		r.BlockNumber = block.Number()
+		for _, l := range r.Logs {
+			l.BlockHash = block.Hash()
+			l.BlockNumber = block.NumberU64()
+			l.TxIndex = uint(i)
+			l.TxHash = txs[i].Hash()
+			l.Index = logIndex
+			logIndex += 1
+		}
+	}
+	return block, receipts
 }
 
 // RandomBlockPrependTxs returns a random block with txCount randomly generated

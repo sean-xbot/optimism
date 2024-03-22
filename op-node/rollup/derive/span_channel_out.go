@@ -57,7 +57,6 @@ func (co *SpanChannelOut) Reset() error {
 	co.reader.Reset()
 	co.closed = false
 	co.spanBatch = &SpanBatch{
-		originChangedBit: co.spanBatch.originChangedBit,
 		GenesisTimestamp: co.spanBatch.GenesisTimestamp,
 		ChainID:          co.spanBatch.ChainID,
 	}

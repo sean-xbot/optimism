@@ -871,10 +871,7 @@ func TestInvalidPayloadInSpanBatch(gt *testing.T) {
 		ApproxComprRatio: 1,
 	})
 	require.NoError(t, e)
-	spanBatch := &derive.SpanBatch{
-		GenesisTimestamp: sd.RollupCfg.Genesis.L2Time,
-		ChainID:          sd.RollupCfg.L2ChainID,
-	}
+	spanBatch := derive.NewSpanBatch(sd.RollupCfg.Genesis.L2Time, sd.RollupCfg.L2ChainID)
 	// Create new span batch channel
 	channelOut, err := derive.NewChannelOut(derive.SpanBatchType, c, spanBatch)
 	require.NoError(t, err)
@@ -922,10 +919,7 @@ func TestInvalidPayloadInSpanBatch(gt *testing.T) {
 		ApproxComprRatio: 1,
 	})
 	require.NoError(t, e)
-	spanBatch = &derive.SpanBatch{
-		GenesisTimestamp: sd.RollupCfg.Genesis.L2Time,
-		ChainID:          sd.RollupCfg.L2ChainID,
-	}
+	spanBatch = derive.NewSpanBatch(sd.RollupCfg.Genesis.L2Time, sd.RollupCfg.L2ChainID)
 	channelOut, err = derive.NewChannelOut(derive.SpanBatchType, c, spanBatch)
 	require.NoError(t, err)
 
