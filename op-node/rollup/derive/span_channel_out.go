@@ -16,11 +16,15 @@ type SpanChannelOut struct {
 	id ChannelID
 	// Frame ID of the next frame to emit. Increment after emitting
 	frame uint64
-	// rlpLength is the uncompressed size of the channel. Must be less than MAX_RLP_BYTES_PER_CHANNEL
-	rlpLength int
 
-	// Compressor stage. Write input data to it
-	compress Compressor
+	// rlpLength is the uncompressed size of the channel. Must be less than MAX_RLP_BYTES_PER_CHANNEL
+	// it is double buffered to allow for optimistic compression
+	rlpLength [2]int
+
+	// double buffer compressor; alternate to optimistically compress without losing last output
+	compress      [2]Compressor
+	compressIndex int
+
 	// closed indicates if the channel is closed
 	closed bool
 	// spanBatch is the batch being built
@@ -36,16 +40,24 @@ func (co *SpanChannelOut) ID() ChannelID {
 }
 
 func NewSpanChannelOut(compress Compressor, spanBatch *SpanBatch) (*SpanChannelOut, error) {
+	// Span Channel Out is designed with the BlindCompressor in mind
+	// The BlindCompressor is a simple compressor that blindly compresses data
+	// Having two of them allows the channel to compress data optimistically
+	// while still being able to recover the last output if the current compression fails
+	c2, err := compress.Clone()
+	if err != nil {
+		return nil, err
+	}
 	c := &SpanChannelOut{
 		id:        ChannelID{},
 		frame:     0,
-		rlpLength: 0,
-		compress:  compress,
+		rlpLength: [2]int{0, 0},
+		compress:  [2]Compressor{compress, c2},
 		spanBatch: spanBatch,
 		reader:    &bytes.Buffer{},
 		scratch:   &bytes.Buffer{},
 	}
-	_, err := rand.Read(c.id[:])
+	_, err = rand.Read(c.id[:])
 	if err != nil {
 		return nil, err
 	}
@@ -55,15 +67,14 @@ func NewSpanChannelOut(compress Compressor, spanBatch *SpanBatch) (*SpanChannelO
 
 func (co *SpanChannelOut) Reset() error {
 	co.frame = 0
-	co.rlpLength = 0
-	co.compress.Reset()
+	co.rlpLength[0] = 0
+	co.rlpLength[1] = 0
+	co.compress[0].Reset()
+	co.compress[1].Reset()
 	co.reader.Reset()
 	co.scratch.Reset()
 	co.closed = false
-	co.spanBatch = &SpanBatch{
-		GenesisTimestamp: co.spanBatch.GenesisTimestamp,
-		ChainID:          co.spanBatch.ChainID,
-	}
+	co.spanBatch = NewSpanBatch(co.spanBatch.GenesisTimestamp, co.spanBatch.ChainID)
 	_, err := rand.Read(co.id[:])
 	return err
 }
@@ -82,6 +93,11 @@ func (co *SpanChannelOut) AddBlock(rollupCfg *rollup.Config, block *types.Block)
 		return 0, err
 	}
 	return co.AddSingularBatch(batch, l1Info.SequenceNumber)
+}
+
+// flipCompressor flips the compressor index between 0 and 1.
+func (co *SpanChannelOut) flipCompressor() {
+	co.compressIndex = (co.compressIndex + 1) % 2
 }
 
 // AddSingularBatch adds a batch to the channel. It returns the RLP encoded byte size
@@ -122,46 +138,38 @@ func (co *SpanChannelOut) AddSingularBatch(batch *SingularBatch, seqNum uint64) 
 		return 0, fmt.Errorf("could not take %d bytes as replacement of channel of %d bytes, max is %d. err: %w",
 			co.scratch.Len(), co.rlpLength, MaxRLPBytesPerChannel, ErrTooManyRLPBytes)
 	}
-	co.rlpLength = co.scratch.Len()
 
-	if len(co.spanBatch.Batches) > 1 {
-		// Flush compressed data into reader to preserve current result.
-		// If the channel is full after this block is appended, we should use preserved data.
-		if err := co.compress.Flush(); err != nil {
-			return 0, fmt.Errorf("failed to flush compressor: %w", err)
-		}
-		_, err = io.Copy(co.reader, co.compress)
-		if err != nil {
-			// Must reset reader to avoid partial output
-			co.reader.Reset()
-			return 0, fmt.Errorf("failed to copy compressed data to reader: %w", err)
-		}
-	}
+	// switch to the other compressor to preserve the previous result
+	co.flipCompressor()
+	co.rlpLength[co.compressIndex] = co.scratch.Len()
 
-	// Reset compressor to rewrite the entire span batch
-	co.compress.Reset()
-	// Avoid using io.Copy here, because we need all or nothing
-	written, err := co.compress.Write(co.scratch.Bytes())
-	if co.compress.FullErr() != nil {
-		err = co.compress.FullErr()
+	// always reset, write, and flush the compressor
+	// old results are stored in the other compressor if there is an error
+	co.compress[co.compressIndex].Reset()
+	written, err := co.compress[co.compressIndex].Write(co.scratch.Bytes())
+	co.compress[co.compressIndex].Flush()
+
+	if err := co.compress[co.compressIndex].FullErr(); err != nil {
+		// flip back to the previous compressor to obtain its result
+		// but only if the previous compressor has at least one batch
+		if len(co.spanBatch.Batches) > 1 {
+			co.flipCompressor()
+		}
+		co.Flush()
+		// if this most recent compression only had one batch, don't return an error
+		// because we *must* have at least one batch in the channel
 		if len(co.spanBatch.Batches) == 1 {
-			// Do not return CompressorFullErr for the first block in the batch
-			// In this case, reader must be empty. then the contents of compressor will be copied to reader when the channel is closed.
-			err = nil
+			return uint64(written), nil
 		}
-		// If there are more than one blocks in the channel, reader should have data that preserves previous compression result before adding this block.
-		// So, as a result, this block is not added to the channel and the channel will be closed.
 		return uint64(written), err
 	}
 
-	// If compressor is not full yet, reader must be reset to avoid submitting invalid frames
-	co.reader.Reset()
 	return uint64(written), err
 }
 
 // InputBytes returns the total amount of RLP-encoded input bytes.
 func (co *SpanChannelOut) InputBytes() int {
-	return co.rlpLength
+	return co.rlpLength[co.compressIndex]
 }
 
 // ReadyBytes returns the number of bytes that the channel out can immediately output into a frame.
@@ -174,11 +182,11 @@ func (co *SpanChannelOut) ReadyBytes() int {
 // Flush flushes the internal compression stage to the ready buffer. It enables pulling a larger & more
 // complete frame. It reduces the compression efficiency.
 func (co *SpanChannelOut) Flush() error {
-	if err := co.compress.Flush(); err != nil {
+	if err := co.compress[co.compressIndex].Flush(); err != nil {
 		return err
 	}
-	if co.closed && co.ReadyBytes() == 0 && co.compress.Len() > 0 {
-		_, err := io.Copy(co.reader, co.compress)
+	if co.ReadyBytes() == 0 && co.compress[co.compressIndex].Len() > 0 {
+		_, err := io.Copy(co.reader, co.compress[co.compressIndex])
 		if err != nil {
 			// Must reset reader to avoid partial output
 			co.reader.Reset()
@@ -189,7 +197,7 @@ func (co *SpanChannelOut) Flush() error {
 }
 
 func (co *SpanChannelOut) FullErr() error {
-	return co.compress.FullErr()
+	return co.compress[co.compressIndex].FullErr()
 }
 
 func (co *SpanChannelOut) Close() error {
@@ -200,7 +208,7 @@ func (co *SpanChannelOut) Close() error {
 	if err := co.Flush(); err != nil {
 		return err
 	}
-	return co.compress.Close()
+	return co.compress[co.compressIndex].Close()
 }
 
 // OutputFrame writes a frame to w with a given max size and returns the frame

@@ -36,6 +36,10 @@ func (s *nonCompressor) FullErr() error {
 	return nil
 }
 
+func (s *nonCompressor) Clone() (Compressor, error) {
+	return &nonCompressor{}, nil
+}
+
 func TestChannelOutAddBlock(t *testing.T) {
 	cout, err := NewChannelOut(SingularBatchType, &nonCompressor{}, nil)
 	require.NoError(t, err)

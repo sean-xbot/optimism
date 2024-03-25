@@ -36,6 +36,10 @@ func NewNonCompressor(config Config) (derive.Compressor, error) {
 	return c, nil
 }
 
+func (t *NonCompressor) Clone() (derive.Compressor, error) {
+	return NewNonCompressor(t.config)
+}
+
 func (t *NonCompressor) Write(p []byte) (int, error) {
 	if err := t.compress.Flush(); err != nil {
 		return 0, err

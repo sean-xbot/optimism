@@ -47,6 +47,8 @@ type Compressor interface {
 	// calls to Write will fail if an error is returned from this method, but calls to Write
 	// can still return CompressorFullErr even if this does not.
 	FullErr() error
+	// Clone creates a new compressor with the same configuration as the current one.
+	Clone() (Compressor, error)
 }
 
 type ChannelOut interface {

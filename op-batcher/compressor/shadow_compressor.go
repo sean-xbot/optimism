@@ -58,6 +58,11 @@ func NewShadowCompressor(config Config) (derive.Compressor, error) {
 	return c, nil
 }
 
+// Clone creates a new ShadowCompressor with the same configuration as the original.
+func (t *ShadowCompressor) Clone() (derive.Compressor, error) {
+	return NewShadowCompressor(t.config)
+}
+
 func (t *ShadowCompressor) Write(p []byte) (int, error) {
 	if t.fullErr != nil {
 		return 0, t.fullErr

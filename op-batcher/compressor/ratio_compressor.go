@@ -34,6 +34,10 @@ func NewRatioCompressor(config Config) (derive.Compressor, error) {
 	return c, nil
 }
 
+func (t *RatioCompressor) Clone() (derive.Compressor, error) {
+	return NewRatioCompressor(t.config)
+}
+
 func (t *RatioCompressor) Write(p []byte) (int, error) {
 	if err := t.FullErr(); err != nil {
 		return 0, err
