@@ -168,6 +168,12 @@ export enum MessageStatus {
    * Message has been relayed.
    */
   RELAYED,
+
+  /**
+   * Message has errored before but is ready to be replayed.
+   * This is similar to READY_FOR_RELAY
+   */
+  READY_FOR_REPLAY,
 }
 
 /**

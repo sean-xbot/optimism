@@ -745,7 +745,7 @@ export class CrossChainMessenger {
       }
     } else {
       if (failure) {
-        return MessageStatus.READY_FOR_RELAY
+        return MessageStatus.READY_FOR_REPLAY
       } else {
         let timestamp: number
         if (this.bedrock) {
@@ -2301,15 +2301,47 @@ export class CrossChainMessenger {
       }
 
       if (this.bedrock) {
-        const withdrawal = await this.toLowLevelMessage(resolved, messageIndex)
-        return this.contracts.l1.OptimismPortal.populateTransaction.finalizeWithdrawalTransaction(
+        // get everything we need to finalize
+        const [status, withdrawal] = await Promise.allSettled([
+          this.getMessageStatus(message),
+          this.toLowLevelMessage(resolved, messageIndex),
+        ])
+
+        // handle errors
+        if (status.status === 'rejected' || withdrawal.status === 'rejected') {
+          const errors: Error[] = []
+          for (const res of [status, withdrawal]) {
+            if (res.status === 'rejected') {
+              errors.push(res.reason)
+            }
+          }
+          throw errors.length > 1 ? new AggregateError(errors) : errors[0]
+        }
+
+        // pick the correct finalize method based on if we are relaying or replaying a failed relay
+        const finalizeMethod = (() => {
+          switch (status.value) {
+            case MessageStatus.READY_FOR_RELAY:
+              return this.contracts.l1.OptimismPortal.populateTransaction
+                .finalizeWithdrawalTransaction
+            case MessageStatus.READY_FOR_REPLAY:
+              return this.contracts.l1.L1CrossDomainMessenger
+                .populateTransaction.relayMessage
+            default:
+              throw new Error(
+                `Message is not ready for finalization: ${status.value}`
+              )
+          }
+        })()
+
+        return finalizeMethod(
           [
-            withdrawal.messageNonce,
-            withdrawal.sender,
-            withdrawal.target,
-            withdrawal.value,
-            withdrawal.minGasLimit,
-            withdrawal.message,
+            withdrawal.value.messageNonce,
+            withdrawal.value.sender,
+            withdrawal.value.target,
+            withdrawal.value.value,
+            withdrawal.value.minGasLimit,
+            withdrawal.value.message,
           ],
           opts?.overrides || {}
         )
