@@ -27,6 +27,8 @@ type SpanChannelOut struct {
 	spanBatch *SpanBatch
 	// reader contains compressed data for making output frames
 	reader *bytes.Buffer
+	// scratch is a temporary buffer for encoding
+	scratch *bytes.Buffer
 }
 
 func (co *SpanChannelOut) ID() ChannelID {
@@ -41,6 +43,7 @@ func NewSpanChannelOut(compress Compressor, spanBatch *SpanBatch) (*SpanChannelO
 		compress:  compress,
 		spanBatch: spanBatch,
 		reader:    &bytes.Buffer{},
+		scratch:   &bytes.Buffer{},
 	}
 	_, err := rand.Read(c.id[:])
 	if err != nil {
@@ -55,6 +58,7 @@ func (co *SpanChannelOut) Reset() error {
 	co.rlpLength = 0
 	co.compress.Reset()
 	co.reader.Reset()
+	co.scratch.Reset()
 	co.closed = false
 	co.spanBatch = &SpanBatch{
 		GenesisTimestamp: co.spanBatch.GenesisTimestamp,
@@ -101,7 +105,6 @@ func (co *SpanChannelOut) AddSingularBatch(batch *SingularBatch, seqNum uint64) 
 		// channel is already full
 		return 0, co.FullErr()
 	}
-	var buf bytes.Buffer
 	// Append Singular batch to its span batch builder
 	co.spanBatch.AppendSingularBatch(batch, seqNum)
 	// Convert Span batch to RawSpanBatch
@@ -110,15 +113,16 @@ func (co *SpanChannelOut) AddSingularBatch(batch *SingularBatch, seqNum uint64) 
 		return 0, fmt.Errorf("failed to convert SpanBatch into RawSpanBatch: %w", err)
 	}
 	// Encode RawSpanBatch into bytes
-	if err = rlp.Encode(&buf, NewBatchData(rawSpanBatch)); err != nil {
+	if err = rlp.Encode(co.scratch, NewBatchData(rawSpanBatch)); err != nil {
 		return 0, fmt.Errorf("failed to encode RawSpanBatch into bytes: %w", err)
 	}
+	defer co.scratch.Reset()
 	// Ensure that the total size of all RLP elements is less than or equal to MAX_RLP_BYTES_PER_CHANNEL
-	if buf.Len() > MaxRLPBytesPerChannel {
+	if co.scratch.Len() > MaxRLPBytesPerChannel {
 		return 0, fmt.Errorf("could not take %d bytes as replacement of channel of %d bytes, max is %d. err: %w",
-			buf.Len(), co.rlpLength, MaxRLPBytesPerChannel, ErrTooManyRLPBytes)
+			co.scratch.Len(), co.rlpLength, MaxRLPBytesPerChannel, ErrTooManyRLPBytes)
 	}
-	co.rlpLength = buf.Len()
+	co.rlpLength = co.scratch.Len()
 
 	if len(co.spanBatch.Batches) > 1 {
 		// Flush compressed data into reader to preserve current result.
@@ -137,7 +141,7 @@ func (co *SpanChannelOut) AddSingularBatch(batch *SingularBatch, seqNum uint64) 
 	// Reset compressor to rewrite the entire span batch
 	co.compress.Reset()
 	// Avoid using io.Copy here, because we need all or nothing
-	written, err := co.compress.Write(buf.Bytes())
+	written, err := co.compress.Write(co.scratch.Bytes())
 	if co.compress.FullErr() != nil {
 		err = co.compress.FullErr()
 		if len(co.spanBatch.Batches) == 1 {
