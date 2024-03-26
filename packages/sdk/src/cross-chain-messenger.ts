@@ -745,7 +745,7 @@ export class CrossChainMessenger {
       }
     } else {
       if (failure) {
-        return MessageStatus.READY_FOR_REPLAY
+        return MessageStatus.READY_FOR_RELAY
       } else {
         let timestamp: number
         if (this.bedrock) {
@@ -2301,16 +2301,34 @@ export class CrossChainMessenger {
       }
 
       if (this.bedrock) {
+        // bedrock withdrawals are v1
+        // legacy withdrawals relayed postbedrock are v1
+        // there is no good way to differentiate between the two types of legacy
+        // so what we will check for both
+        const messageHashV1 = hashCrossDomainMessagev1(
+          resolved.messageNonce,
+          resolved.sender,
+          resolved.target,
+          resolved.value,
+          resolved.minGasLimit,
+          resolved.message
+        )
+
         // get everything we need to finalize
-        const [status, withdrawal] = await Promise.allSettled([
-          this.getMessageStatus(message),
+        const [isFailed, withdrawal] = await Promise.allSettled([
+          this.contracts.l1.L1CrossDomainMessenger.failedMessages(
+            messageHashV1
+          ),
           this.toLowLevelMessage(resolved, messageIndex),
         ])
 
         // handle errors
-        if (status.status === 'rejected' || withdrawal.status === 'rejected') {
+        if (
+          isFailed.status === 'rejected' ||
+          withdrawal.status === 'rejected'
+        ) {
           const errors: Error[] = []
-          for (const res of [status, withdrawal]) {
+          for (const res of [isFailed, withdrawal]) {
             if (res.status === 'rejected') {
               errors.push(res.reason)
             }
@@ -2318,23 +2336,24 @@ export class CrossChainMessenger {
           throw errors.length > 1 ? new AggregateError(errors) : errors[0]
         }
 
-        // pick the correct finalize method based on if we are relaying or replaying a failed relay
-        const finalizeMethod = (() => {
-          switch (status.value) {
-            case MessageStatus.READY_FOR_RELAY:
-              return this.contracts.l1.OptimismPortal.populateTransaction
-                .finalizeWithdrawalTransaction
-            case MessageStatus.READY_FOR_REPLAY:
-              return this.contracts.l1.L1CrossDomainMessenger
-                .populateTransaction.relayMessage
-            default:
-              throw new Error(
-                `Message is not ready for finalization: ${status.value}`
-              )
-          }
-        })()
+        // if failed we need to replay the message rather than finalizing it
+        if (isFailed.value === true) {
+          const xdmWithdrawal =
+            this.contracts.l1.L1CrossDomainMessenger.interface.decodeFunctionData(
+              'relayMessage',
+              withdrawal.value.message
+            )
+          return this.contracts.l1.L1CrossDomainMessenger.populateTransaction.relayMessage(
+            xdmWithdrawal.target,
+            xdmWithdrawal.sender,
+            xdmWithdrawal.message,
+            xdmWithdrawal.messageNonce,
+            xdmWithdrawal.proof,
+            opts?.overrides || {}
+          )
+        }
 
-        return finalizeMethod(
+        return this.contracts.l1.OptimismPortal.populateTransaction.finalizeWithdrawalTransaction(
           [
             withdrawal.value.messageNonce,
             withdrawal.value.sender,
