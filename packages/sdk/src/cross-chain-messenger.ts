@@ -2301,10 +2301,6 @@ export class CrossChainMessenger {
       }
 
       if (this.bedrock) {
-        // bedrock withdrawals are v1
-        // legacy withdrawals relayed postbedrock are v1
-        // there is no good way to differentiate between the two types of legacy
-        // so what we will check for both
         const messageHashV1 = hashCrossDomainMessagev1(
           resolved.messageNonce,
           resolved.sender,
