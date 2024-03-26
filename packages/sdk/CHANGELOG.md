@@ -1,5 +1,11 @@
 # @eth-optimism/sdk
 
+## 3.3.0
+
+### Minor Changes
+
+- [#9951](https://github.com/ethereum-optimism/optimism/pull/9951) [`ac5b061dfce6a9817b928a8703be9252daaeeca7`](https://github.com/ethereum-optimism/optimism/commit/ac5b061dfce6a9817b928a8703be9252daaeeca7) Thanks [@smartcontracts](https://github.com/smartcontracts)! - Updates SDK for FPAC proven withdrawals mapping.
+
 ## 3.2.3
 
 ### Patch Changes
