@@ -7,6 +7,7 @@ import { ISemver } from "src/universal/ISemver.sol";
 import { CrossDomainMessenger } from "src/universal/CrossDomainMessenger.sol";
 import { SuperchainConfig } from "src/L1/SuperchainConfig.sol";
 import { Constants } from "src/libraries/Constants.sol";
+import { Encoding } from "src/libraries/Encoding.sol";
 
 /// @custom:proxied
 /// @title L1StandardBridge
@@ -98,6 +99,76 @@ contract L1StandardBridge is StandardBridge, ISemver {
         _initiateETHDeposit(msg.sender, msg.sender, RECEIVE_DEFAULT_GAS_LIMIT, bytes(""));
     }
 
+    /// @notice Constant overhead added to the base gas for a message.
+    uint64 public constant RELAY_CONSTANT_OVERHEAD = 200_000;
+
+    /// @notice Numerator for dynamic overhead added to the base gas for a message.
+    uint64 public constant MIN_GAS_DYNAMIC_OVERHEAD_NUMERATOR = 64;
+
+
+    /// @notice Denominator for dynamic overhead added to the base gas for a message.
+    uint64 public constant MIN_GAS_DYNAMIC_OVERHEAD_DENOMINATOR = 63;
+
+    /// @notice Extra gas added to base gas for each byte of calldata in a message.
+    uint64 public constant MIN_GAS_CALLDATA_OVERHEAD = 16;
+
+    /// @notice Gas reserved for performing the external call in `relayMessage`.
+    uint64 public constant RELAY_CALL_OVERHEAD = 40_000;
+
+    /// @notice Gas reserved for finalizing the execution of `relayMessage` after the safe call.
+    uint64 public constant RELAY_RESERVED_GAS = 40_000;
+
+    /// @notice Gas reserved for the execution between the `hasMinGas` check and the external
+    ///         call in `relayMessage`.
+    uint64 public constant RELAY_GAS_CHECK_BUFFER = 5_000;
+
+    function baseGas(bytes calldata _message, uint32 _minGasLimit) public pure returns (uint64) {
+        return
+        // Constant overhead
+        RELAY_CONSTANT_OVERHEAD
+        // Calldata overhead
+        + (uint64(_message.length) * MIN_GAS_CALLDATA_OVERHEAD)
+        // Dynamic overhead (EIP-150)
+        + ((_minGasLimit * MIN_GAS_DYNAMIC_OVERHEAD_NUMERATOR) / MIN_GAS_DYNAMIC_OVERHEAD_DENOMINATOR)
+        // Gas reserved for the worst-case cost of 3/5 of the `CALL` opcode's dynamic gas
+        // factors. (Conservative)
+        + RELAY_CALL_OVERHEAD
+        // Relay reserved gas (to ensure execution of `relayMessage` completes after the
+        // subcontext finishes executing) (Conservative)
+        + RELAY_RESERVED_GAS
+        // Gas reserved for the execution between the `hasMinGas` check and the `CALL`
+        // opcode. (Conservative)
+        + RELAY_GAS_CHECK_BUFFER;
+    }
+
+    /// @notice Current message version identifier.
+    uint16 public constant MESSAGE_VERSION = 1;
+
+    /// @notice Nonce for the next message to be sent, without the message version applied. Use the
+    ///         messageNonce getter which will insert the message version into the nonce to give you
+    ///         the actual nonce to be used for the message.
+    uint240 internal msgNonce;
+
+    /// @notice Retrieves the next message nonce. Message version will be added to the upper two
+    ///         bytes of the message nonce. Message version allows us to treat messages as having
+    ///         different structures.
+    /// @return Nonce of the next message to be sent, with added message version.
+    function messageNonce() public view returns (uint256) {
+        return Encoding.encodeVersionedNonce(msgNonce, MESSAGE_VERSION);
+    }
+
+    /// @notice Version of the deposit event.
+    uint256 internal constant DEPOSIT_VERSION = 0;
+
+    /// @notice Emitted when a transaction is deposited from L1 to L2.
+    ///         The parameters of this event are read by the rollup node and used to derive deposit
+    ///         transactions on L2.
+    /// @param from       Address that triggered the deposit transaction.
+    /// @param to         Address that the deposit transaction is directed to.
+    /// @param version    Version of this deposit transaction event.
+    /// @param opaqueData ABI encoded deposit data to be parsed off-chain.
+    event TransactionDeposited(address indexed from, address indexed to, uint256 indexed version, bytes opaqueData);
+
     /// @custom:legacy
     /// @notice Deposits some amount of ETH into the sender's account on L2.
     /// @param _minGasLimit Minimum gas limit for the deposit message on L2.
@@ -105,7 +176,29 @@ contract L1StandardBridge is StandardBridge, ISemver {
     ///                     Data supplied here will not be used to execute any code on L2 and is
     ///                     only emitted as extra data for the convenience of off-chain tooling.
     function depositETH(uint32 _minGasLimit, bytes calldata _extraData) external payable onlyEOA {
-        _initiateETHDeposit(msg.sender, msg.sender, _minGasLimit, _extraData);
+        address _from = msg.sender;
+        address _to = msg.sender;
+        uint256 _amount = msg.value;
+        address _target = address(OTHER_BRIDGE);
+        bytes calldata _message = abi.encodeWithSelector(this.finalizeBridgeETH.selector, _from, _to, _amount, _extraData);
+        uint64 _gasLimit = baseGas(_message, _minGasLimit);
+        bool _isCreation = false;
+        bytes memory _data = abi.encodeWithSelector(
+            CrossDomainMessenger.relayMessage.selector, messageNonce(), address(this), _target, _amount, _minGasLimit, _message
+        );
+
+        // Compute the opaque data that will be emitted as part of the TransactionDeposited event.
+        // We use opaque data so that we can update the TransactionDeposited event in the future
+        // without breaking the current interface.
+        bytes memory opaqueData = abi.encodePacked(_amount, _amount, _gasLimit, _isCreation, _data);
+
+        // Emit a TransactionDeposited event so that the rollup node can derive a deposit
+        // transaction for this deposit.
+        emit TransactionDeposited(_from, MESSENGER.OTHER_MESSENGER, DEPOSIT_VERSION, opaqueData);
+
+        unchecked {
+            ++msgNonce;
+        }
     }
 
     /// @custom:legacy
