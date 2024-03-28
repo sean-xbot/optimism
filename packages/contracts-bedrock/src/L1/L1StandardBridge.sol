@@ -175,10 +175,10 @@ contract L1StandardBridge is StandardBridge, ISemver {
     /// @param _extraData   Optional data to forward to L2.
     ///                     Data supplied here will not be used to execute any code on L2 and is
     ///                     only emitted as extra data for the convenience of off-chain tooling.
-    function depositETH(uint32 _minGasLimit, bytes calldata _extraData) external payable onlyEOA {
+    function depositETH(uint256 _amount, uint32 _minGasLimit, bytes calldata _extraData) external payable onlyEOA {
         address _from = msg.sender;
         address _to = msg.sender;
-        uint256 _amount = msg.value;
+        // uint256 _amount = msg.value;
         address _target = address(OTHER_BRIDGE);
         bytes memory _message = abi.encodeWithSelector(this.finalizeBridgeETH.selector, _from, _to, _amount, _extraData);
         uint64 _gasLimit = baseGas(_message, _minGasLimit);
