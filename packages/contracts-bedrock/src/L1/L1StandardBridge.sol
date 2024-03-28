@@ -122,7 +122,7 @@ contract L1StandardBridge is StandardBridge, ISemver {
     ///         call in `relayMessage`.
     uint64 public constant RELAY_GAS_CHECK_BUFFER = 5_000;
 
-    function baseGas(bytes calldata _message, uint32 _minGasLimit) public pure returns (uint64) {
+    function baseGas(bytes memory _message, uint32 _minGasLimit) public pure returns (uint64) {
         return
         // Constant overhead
         RELAY_CONSTANT_OVERHEAD
@@ -194,7 +194,7 @@ contract L1StandardBridge is StandardBridge, ISemver {
 
         // Emit a TransactionDeposited event so that the rollup node can derive a deposit
         // transaction for this deposit.
-        emit TransactionDeposited(_from, MESSENGER.OTHER_MESSENGER, DEPOSIT_VERSION, opaqueData);
+        emit TransactionDeposited(_from, MESSENGER.OTHER_MESSENGER(), DEPOSIT_VERSION, opaqueData);
 
         unchecked {
             ++msgNonce;
