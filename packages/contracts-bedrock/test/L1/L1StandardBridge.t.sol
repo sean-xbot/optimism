@@ -258,7 +258,7 @@ contract L1StandardBridge_DepositETH_Test is PreBridgeETH {
     ///      ETH ends up in the optimismPortal.
     function test_depositETH_succeeds() external {
         _preBridgeETH({ isLegacy: true });
-        l1StandardBridge.depositETH{ value: 500 }(50000, hex"dead");
+        l1StandardBridge.depositETH(500, 50000, hex"dead");
         assertEq(address(optimismPortal).balance, 500);
     }
 }
@@ -282,7 +282,7 @@ contract L1StandardBridge_DepositETH_TestFail is Bridge_Initializer {
         vm.etch(alice, address(L1Token).code);
         vm.expectRevert("StandardBridge: function can only be called from an EOA");
         vm.prank(alice);
-        l1StandardBridge.depositETH{ value: 1 }(300, hex"");
+        l1StandardBridge.depositETH(1, 300, hex"");
     }
 }
 
