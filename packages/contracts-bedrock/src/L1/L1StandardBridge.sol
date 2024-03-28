@@ -180,7 +180,7 @@ contract L1StandardBridge is StandardBridge, ISemver {
         address _to = msg.sender;
         uint256 _amount = msg.value;
         address _target = address(OTHER_BRIDGE);
-        bytes calldata _message = abi.encodeWithSelector(this.finalizeBridgeETH.selector, _from, _to, _amount, _extraData);
+        bytes memory _message = abi.encodeWithSelector(this.finalizeBridgeETH.selector, _from, _to, _amount, _extraData);
         uint64 _gasLimit = baseGas(_message, _minGasLimit);
         bool _isCreation = false;
         bytes memory _data = abi.encodeWithSelector(
